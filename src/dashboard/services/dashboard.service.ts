@@ -39,6 +39,8 @@ export class DashboardFilters {
 
 @Injectable()
 export class DashboardService {
+  private semanasBackfilled = false;
+
   constructor(
     @InjectRepository(DocumentEntity)
     private documentsRepository: Repository<DocumentEntity>,
@@ -112,36 +114,6 @@ export class DashboardService {
     return `COALESCE(NULLIF(LOWER(TRIM(${alias}.mes)), ''), CASE WHEN ${alias}.fecha IS NOT NULL THEN CASE EXTRACT(MONTH FROM ${alias}.fecha)::int WHEN 1 THEN 'enero' WHEN 2 THEN 'febrero' WHEN 3 THEN 'marzo' WHEN 4 THEN 'abril' WHEN 5 THEN 'mayo' WHEN 6 THEN 'junio' WHEN 7 THEN 'julio' WHEN 8 THEN 'agosto' WHEN 9 THEN 'septiembre' WHEN 10 THEN 'octubre' WHEN 11 THEN 'noviembre' WHEN 12 THEN 'diciembre' END END)`;
   }
 
-  private getSemanaSqlExpression(alias = 'doc') {
-    return `CASE WHEN ${alias}.fecha IS NOT NULL THEN (1 + FLOOR(((EXTRACT(DOY FROM ${alias}.fecha)::int - 1) + EXTRACT(DOW FROM DATE_TRUNC('year', ${alias}.fecha))::int) / 7))::text ELSE NULLIF(TRIM(${alias}.semana), '') END`;
-  }
-
-  private resolveSemanaFromDoc(doc: Partial<DocumentEntity>): string | null {
-    const fechaValue = doc?.fecha as any;
-    if (fechaValue) {
-      const fecha = fechaValue instanceof Date ? fechaValue : new Date(fechaValue);
-      if (!isNaN(fecha.getTime())) {
-        const startOfYear = new Date(Date.UTC(fecha.getUTCFullYear(), 0, 1));
-        const current = new Date(Date.UTC(fecha.getUTCFullYear(), fecha.getUTCMonth(), fecha.getUTCDate()));
-        const dayOfYear = Math.floor((current.getTime() - startOfYear.getTime()) / 86400000) + 1;
-        const jan1Dow = startOfYear.getUTCDay();
-        const week = Math.floor((dayOfYear + jan1Dow - 1) / 7) + 1;
-        return String(week);
-      }
-    }
-
-    if (doc?.semana !== null && doc?.semana !== undefined && String(doc.semana).trim() !== '') {
-      return String(doc.semana).trim();
-    }
-    return null;
-  }
-
-  private applySemanaFilter(queryBuilder: any, semana?: string, alias = 'doc', paramName = 'semana') {
-    if (!semana) return queryBuilder;
-    const semanaExpr = this.getSemanaSqlExpression(alias);
-    queryBuilder.andWhere(`${semanaExpr} = :${paramName}`, { [paramName]: String(semana) });
-    return queryBuilder;
-  }
 
   private sortMeses(meses: string[]): string[] {
     const orden: Record<string, number> = {
@@ -174,8 +146,18 @@ export class DashboardService {
     return [...semanas]
       .filter((s) => s !== null && s !== undefined && String(s).trim() !== '')
       .map((s) => String(s).trim())
-      .sort((a, b) => Number(a) - Number(b));
+      .sort((a, b) => {
+        const na = Number(a);
+        const nb = Number(b);
+        const aNum = !Number.isNaN(na);
+        const bNum = !Number.isNaN(nb);
+        if (aNum && bNum) return na - nb;
+        if (aNum) return -1;
+        if (bNum) return 1;
+        return a.localeCompare(b, 'es');
+      });
   }
+
 
   private getEmpresaSqlExpression(alias = 'doc') {
     return `COALESCE(NULLIF(TRIM(${alias}.empresa), ''), (SELECT et2.nombre FROM unidad u2 LEFT JOIN empresa_transporte et2 ON et2.id = u2.empresa_id WHERE UPPER(TRIM(u2.placa)) = UPPER(TRIM(${alias}.unidad)) ORDER BY CASE WHEN u2.estado = 'activo' THEN 0 ELSE 1 END, u2.id DESC LIMIT 1), 'SIN EMPRESA')`;
@@ -189,12 +171,31 @@ export class DashboardService {
       .where(`${alias}.anulado = :anulado`, { anulado: false });
   }
 
+  // Corrige registros historicos con semana vacia usando fecha (semana ISO),
+  // manteniendo el comportamiento previo del sistema.
+  private async ensureSemanasBackfilled(): Promise<void> {
+    if (this.semanasBackfilled) return;
+
+    await this.documentsRepository
+      .createQueryBuilder()
+      .update(DocumentEntity)
+      .set({
+        semana: () => `CAST(CAST(TO_CHAR(fecha, 'IW') AS INTEGER) AS TEXT)`,
+        mes: () => `COALESCE(NULLIF(LOWER(TRIM(mes)), ''), CASE EXTRACT(MONTH FROM fecha)::int WHEN 1 THEN 'enero' WHEN 2 THEN 'febrero' WHEN 3 THEN 'marzo' WHEN 4 THEN 'abril' WHEN 5 THEN 'mayo' WHEN 6 THEN 'junio' WHEN 7 THEN 'julio' WHEN 8 THEN 'agosto' WHEN 9 THEN 'septiembre' WHEN 10 THEN 'octubre' WHEN 11 THEN 'noviembre' WHEN 12 THEN 'diciembre' END)`,
+      })
+      .where(`(semana IS NULL OR TRIM(semana) = '') AND fecha IS NOT NULL`)
+      .execute();
+
+    this.semanasBackfilled = true;
+  }
+
   /**
    * Obtiene valores �nicos para los segmentadores
    */
   async getSegmentadores(): Promise<any> {
+    await this.ensureSemanasBackfilled();
+
     const mesExpr = this.getMesSqlExpression('doc');
-    const semanaExpr = this.getSemanaSqlExpression('doc');
 
     const meses = await this.createDocQuery()
       .select(`DISTINCT ${mesExpr}`, 'mes')
@@ -202,8 +203,9 @@ export class DashboardService {
       .getRawMany();
 
     const semanas = await this.createDocQuery()
-      .select(`DISTINCT ${semanaExpr}`, 'semana')
-      .andWhere(`${semanaExpr} IS NOT NULL`)
+      .select('DISTINCT doc.semana', 'semana')
+      .andWhere('doc.semana IS NOT NULL')
+      .orderBy('doc.semana')
       .getRawMany();
 
     const clientes = await this.createDocQuery()
@@ -246,15 +248,16 @@ export class DashboardService {
    * dada la combinaci�n de los DEM�S filtros seleccionados.
    */
   async getSegmentadoresFiltrados(filters: DashboardFilters): Promise<any> {
+    await this.ensureSemanasBackfilled();
+
     const { mes, semana, cliente, transportista, unidad, transportado } = filters;
     const mesExpr = this.getMesSqlExpression('doc');
-    const semanaExpr = this.getSemanaSqlExpression('doc');
 
     const { divisa } = filters;
 
     const applyFilters = (qb: any, omit: string) => {
       if (mes && omit !== 'mes') this.applyMesFilter(qb, mes);
-      if (semana && omit !== 'semana') this.applySemanaFilter(qb, semana);
+      if (semana && omit !== 'semana') qb.andWhere('doc.semana = :semana', { semana });
       if (cliente && omit !== 'cliente') qb.andWhere('doc.cliente = :cliente', { cliente });
       if (transportista && omit !== 'transportista') qb.andWhere('doc.transportista = :transportista', { transportista });
       if (unidad && omit !== 'unidad') qb.andWhere('doc.unidad = :unidad', { unidad });
@@ -273,12 +276,7 @@ export class DashboardService {
             .andWhere(`${mesExpr} IS NOT NULL`),
           'mes',
         ).getRawMany(),
-        applyFilters(
-          this.createDocQuery()
-            .select(`DISTINCT ${semanaExpr}`, 'semana')
-            .andWhere(`${semanaExpr} IS NOT NULL`),
-          'semana',
-        ).getRawMany(),
+        applyFilters(this.createDocQuery().select('DISTINCT doc.semana', 'semana').andWhere('doc.semana IS NOT NULL').orderBy('doc.semana'), 'semana').getRawMany(),
         applyFilters(this.createDocQuery().select('DISTINCT doc.cliente', 'cliente').andWhere('doc.cliente IS NOT NULL').orderBy('doc.cliente'), 'cliente').getRawMany(),
         applyFilters(this.createDocQuery().select('DISTINCT doc.transportista', 'transportista').andWhere('doc.transportista IS NOT NULL').orderBy('doc.transportista'), 'transportista').getRawMany(),
         applyFilters(this.createDocQuery().select('DISTINCT doc.unidad', 'unidad').andWhere('doc.unidad IS NOT NULL').orderBy('doc.unidad'), 'unidad').getRawMany(),
@@ -414,54 +412,59 @@ export class DashboardService {
    * TN Enviado por semana
    */
   async getTnEnviadoPorSemana(filters: DashboardFilters): Promise<any[]> {
-    const semanaExpr = this.getSemanaSqlExpression('doc');
-    const mesExpr = this.getMesSqlExpression('doc');
+    await this.ensureSemanasBackfilled();
 
     const queryBuilder = this.createDocQuery()
-      .select(semanaExpr, 'semana')
-      .addSelect(mesExpr, 'mes')
-      .addSelect('SUM(COALESCE(doc.tn_enviado, 0))', 'total')
-      .andWhere(`${semanaExpr} IS NOT NULL`);
+      .select('doc.semana', 'semana')
+      .addSelect('doc.mes', 'mes')
+      .addSelect('SUM(doc.tn_enviado)', 'total')
+      .andWhere('doc.semana IS NOT NULL');
 
     this.applyMesFilter(queryBuilder, filters.mes);
-    this.applySemanaFilter(queryBuilder, filters.semana);
+    if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
     if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
 
-    return await queryBuilder
-      .groupBy(semanaExpr)
-      .addGroupBy(mesExpr)
-      .orderBy(`CAST(${semanaExpr} AS INTEGER)`, 'ASC')
+    const rows = await queryBuilder
+      .groupBy('doc.semana')
+      .addGroupBy('doc.mes')
+      .orderBy('doc.mes')
+      .addOrderBy('doc.semana')
       .getRawMany();
+
+    return rows.sort((a, b) => Number(a.semana) - Number(b.semana));
   }
 
   /**
    * TN Recibido por semana
    */
   async getTnRecibidoPorSemana(filters: DashboardFilters): Promise<any[]> {
-    const semanaExpr = this.getSemanaSqlExpression('doc');
-    const mesExpr = this.getMesSqlExpression('doc');
+    await this.ensureSemanasBackfilled();
 
     const queryBuilder = this.createDocQuery()
-      .select(semanaExpr, 'semana')
-      .addSelect(mesExpr, 'mes')
-      .addSelect('SUM(COALESCE(doc.tn_recibida, doc.tn_enviado, 0))', 'total')
-      .andWhere(`${semanaExpr} IS NOT NULL`);
+      .select('doc.semana', 'semana')
+      .addSelect('doc.mes', 'mes')
+      .addSelect('SUM(doc.tn_recibida)', 'total')
+      .andWhere('doc.semana IS NOT NULL')
+      .andWhere('doc.tn_recibida IS NOT NULL');
 
     this.applyMesFilter(queryBuilder, filters.mes);
-    this.applySemanaFilter(queryBuilder, filters.semana);
+    if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
     if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
 
-    return await queryBuilder
-      .groupBy(semanaExpr)
-      .addGroupBy(mesExpr)
-      .orderBy(`CAST(${semanaExpr} AS INTEGER)`, 'ASC')
+    const rows = await queryBuilder
+      .groupBy('doc.semana')
+      .addGroupBy('doc.mes')
+      .orderBy('doc.mes')
+      .addOrderBy('doc.semana')
       .getRawMany();
+
+    return rows.sort((a, b) => Number(a.semana) - Number(b.semana));
   }
 
   /**
@@ -492,12 +495,12 @@ export class DashboardService {
   async getTnPorConcentradoRecibido(filters: DashboardFilters): Promise<any[]> {
     const queryBuilder = this.createDocQuery()
       .select('doc.transportado', 'tipo_concentrado')
-      .addSelect('SUM(COALESCE(doc.tn_recibida, doc.tn_enviado, 0))', 'total')
+      .addSelect('SUM(doc.tn_recibida)', 'total')
       .andWhere('doc.transportado IS NOT NULL')
-      .andWhere('(doc.tn_recibida IS NOT NULL OR doc.tn_enviado IS NOT NULL)');
+      .andWhere('doc.tn_recibida IS NOT NULL');
 
     this.applyMesFilter(queryBuilder, filters.mes);
-    this.applySemanaFilter(queryBuilder, filters.semana);
+    if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
@@ -644,6 +647,8 @@ export class DashboardService {
    * Detalle de transportista (agrupado)
    */
   async getDetalleTransportista(filters: DashboardFilters): Promise<any[]> {
+    await this.ensureSemanasBackfilled();
+
     const queryBuilder = this.createDocQuery()
       .select('doc.transportista', 'transportista')
       .addSelect('COALESCE(doc.divisa_cost, \'PEN\')', 'divisa_cost')
@@ -885,32 +890,33 @@ export class DashboardService {
    * Agrupado por Cliente ? Empresa ? Unidad ? Semana
    */
   async getSeguimientoTransporte(filters: DashboardFilters): Promise<any[]> {
+    await this.ensureSemanasBackfilled();
+
     const empresaExpr = this.getEmpresaSqlExpression('doc');
-    const semanaExpr = this.getSemanaSqlExpression('doc');
 
     const queryBuilder = this.createDocQuery()
       .select('doc.cliente', 'cliente')
       .addSelect(empresaExpr, 'empresa')
-      .addSelect(`COALESCE(NULLIF(TRIM(doc.unidad), ''), 'SIN UNIDAD')`, 'placa')
-      .addSelect(semanaExpr, 'semana')
-      .addSelect('SUM(COALESCE(doc.tn_recibida, doc.tn_enviado, 0))', 'tn_recibida')
-      .andWhere(`${semanaExpr} IS NOT NULL`)
-      .andWhere('doc.cliente IS NOT NULL');
+      .addSelect('doc.unidad', 'placa')
+      .addSelect('doc.semana', 'semana')
+      .addSelect('SUM(doc.tn_recibida)', 'tn_recibida')
+      .andWhere('doc.semana IS NOT NULL')
+      .andWhere('doc.unidad IS NOT NULL');
 
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
     this.applyMesFilter(queryBuilder, filters.mes);
-    this.applySemanaFilter(queryBuilder, filters.semana);
+    if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
 
     return await queryBuilder
       .groupBy('doc.cliente')
       .addGroupBy(empresaExpr)
-      .addGroupBy(`COALESCE(NULLIF(TRIM(doc.unidad), ''), 'SIN UNIDAD')`)
-      .addGroupBy(semanaExpr)
+      .addGroupBy('doc.unidad')
+      .addGroupBy('doc.semana')
       .orderBy('doc.cliente')
       .addOrderBy(empresaExpr)
-      .addOrderBy(`COALESCE(NULLIF(TRIM(doc.unidad), ''), 'SIN UNIDAD')`)
-      .addOrderBy(semanaExpr)
+      .addOrderBy('doc.unidad')
+      .addOrderBy('doc.semana')
       .getRawMany();
   }
 
@@ -1147,6 +1153,8 @@ export class DashboardService {
    * Tablas Detalladas: Venta, Costo y Margen agrupados por cliente ? material y empresa
    */
   async getTablasDetalladas(mes: string, semana?: string): Promise<any> {
+    await this.ensureSemanasBackfilled();
+
     const mesNumero = this.getMesNumero(mes);
 
     // 1. Obtener todos los documentos no anulados del mes (sin filtro de semana)
@@ -1166,14 +1174,13 @@ export class DashboardService {
     // Semanas disponibles en el mes (para devolver al frontend y construir el selector)
     const semanasSet = new Set<string>();
     for (const d of allDocsDelMes) {
-      const sem = this.resolveSemanaFromDoc(d as any);
-      if (sem) semanasSet.add(sem);
+      if (d.semana) semanasSet.add(String(d.semana));
     }
     const semanasDisponibles = [...semanasSet].sort((a, b) => Number(a) - Number(b));
 
     // Filtrar por semana si se proporcion�
     const docs = semana
-      ? allDocsDelMes.filter(d => this.resolveSemanaFromDoc(d as any) === String(semana))
+      ? allDocsDelMes.filter(d => String(d.semana) === String(semana))
       : allDocsDelMes;
 
     // 2. Resolver empresa por placa
@@ -1381,6 +1388,8 @@ export class DashboardService {
    * Agrupa por placa (unidad) y sub-agrupa por semana.
    */
   async getReporteGuias(empresaNombre: string, mes: string, semana?: string): Promise<any> {
+    await this.ensureSemanasBackfilled();
+
     const mesNumero = this.getMesNumero(mes);
 
     // Obtener las placas de la empresa
@@ -1449,7 +1458,7 @@ export class DashboardService {
       // Sub-agrupar por semana
       const semanasMap = new Map<string, any[]>();
       for (const doc of placaDocs) {
-        const sem = this.resolveSemanaFromDoc(doc as any) || 'Sin semana';
+        const sem = doc.semana || 'Sin semana';
         if (!semanasMap.has(sem)) semanasMap.set(sem, []);
         semanasMap.get(sem)!.push(doc);
       }

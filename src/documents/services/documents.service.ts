@@ -68,12 +68,17 @@ export class DocumentsService {
     return null;
   }
 
-  // Semana del ano con inicio en domingo. Cumple: 01/03/2026 => semana 10.
+  // Semana ISO (1-53). Cumple: 01/03/2026 => semana 9.
   private getWeekOfYearFromDate(dateUtc: Date): number {
-    const startOfYear = new Date(Date.UTC(dateUtc.getUTCFullYear(), 0, 1));
-    const dayOfYear = Math.floor((dateUtc.getTime() - startOfYear.getTime()) / 86400000) + 1;
-    const jan1Dow = startOfYear.getUTCDay();
-    return Math.floor((dayOfYear + jan1Dow - 1) / 7) + 1;
+    const target = new Date(dateUtc.valueOf());
+    const dayNr = (dateUtc.getUTCDay() + 6) % 7;
+    target.setUTCDate(target.getUTCDate() - dayNr + 3);
+    const firstThursday = target.valueOf();
+    target.setUTCMonth(0, 1);
+    if (target.getUTCDay() !== 4) {
+      target.setUTCMonth(0, 1 + ((4 - target.getUTCDay()) + 7) % 7);
+    }
+    return 1 + Math.ceil((firstThursday - target.valueOf()) / 604800000);
   }
 
   private assignMesSemanaFromFecha(documentData: Partial<DocumentEntity>): void {
@@ -1157,11 +1162,6 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     // Si se proporciona userId, guardarlo como updated_by
     if (userId) {
       updateData.updated_by = userId;
-    }
-
-    // Si cambia fecha, remapear mes y semana con la regla centralizada.
-    if (updateData.fecha) {
-      this.assignMesSemanaFromFecha(updateData);
     }
 
     // Si se actualiza tn_recibida, recalcular campos financieros
