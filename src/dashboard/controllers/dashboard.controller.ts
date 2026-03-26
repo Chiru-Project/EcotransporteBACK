@@ -165,6 +165,14 @@ export class DashboardController {
   }
 
   /**
+   * Detalle de traslados por transportista (lista para cortina desplegable)
+   */
+  @Get('detalle-transportista-viajes')
+  async getDetalleTransportistaViajes(@Query() filters: DashboardFilters) {
+    return await this.dashboardService.getDetalleTransportistaViajes(filters);
+  }
+
+  /**
    * Tonelaje enviado general (sin filtros)
    */
   @Get('tonelaje-enviado-general')

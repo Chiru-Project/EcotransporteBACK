@@ -673,6 +673,40 @@ export class DashboardService {
   }
 
   /**
+   * Detalle de traslados por transportista (para tabla desplegable en frontend)
+   */
+  async getDetalleTransportistaViajes(filters: DashboardFilters): Promise<any[]> {
+    await this.ensureSemanasBackfilled();
+
+    const queryBuilder = this.createDocQuery()
+      .select("COALESCE(doc.transportista, '')", 'transportista')
+      .addSelect('COALESCE(doc.divisa_cost, \'PEN\')', 'divisa_cost')
+      .addSelect('doc.fecha', 'fecha')
+      .addSelect('doc.unidad', 'unidad')
+      .addSelect('doc.cliente', 'cliente')
+      .addSelect('doc.partida', 'partida')
+      .addSelect('doc.llegada', 'llegada')
+      .addSelect('doc.transportado', 'material')
+      .addSelect('doc.grt', 'grt')
+      .addSelect('doc.grr', 'grr')
+      .addSelect('doc.ticket', 'ticket')
+      .addSelect('doc.tn_recibida', 'tn_recibida')
+      .addSelect('COALESCE(doc.precio_final, 0)', 'precio_total')
+      .andWhere('doc.transportista IS NOT NULL');
+
+    this.applyMesFilter(queryBuilder, filters.mes);
+    if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
+    if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
+    if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
+    if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
+
+    return await queryBuilder
+      .orderBy('doc.transportista', 'ASC')
+      .addOrderBy('doc.fecha', 'DESC')
+      .getRawMany();
+  }
+
+  /**
    * Tonelaje total enviado (general - sin filtros)
    */
   async getTonelajeEnviadoGeneral(): Promise<number> {
