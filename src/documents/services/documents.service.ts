@@ -1346,12 +1346,22 @@ const placaRegex = /^[A-Z0-9]{6}$/;
   }
 
   async uploadToCloudinary(buffer: Buffer, filename: string): Promise<string> {
+    const safeBaseName = (filename || 'file')
+      .replace(/\.[^/.]+$/, '')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 80);
+    const isPdf = /\.pdf$/i.test(filename || '');
+
     return new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
-          resource_type: 'auto',
+          // PDFs are uploaded as raw to avoid delivery restrictions in some Cloudinary accounts.
+          resource_type: isPdf ? 'raw' : 'auto',
+          type: 'upload',
+          access_mode: 'public',
           folder: 'documents',
-          public_id: `${Date.now()}_${filename.replace(/\.[^/.]+$/, '')}`,
+          // Keep .pdf extension in public_id so delivery URLs preserve type hints.
+          public_id: `${Date.now()}_${safeBaseName}${isPdf ? '.pdf' : ''}`,
         },
         (error, result) => {
           if (error) return reject(error);
@@ -1381,25 +1391,146 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     return this.documentsRepository.save(doc);
   }
 
-  async streamRemoteFile(url: string, res: any, redirectCount = 0): Promise<void> {
+  private parseCloudinaryAssetUrl(assetUrl: string): {
+    resourceType: string;
+    deliveryType: string;
+    publicId: string;
+    format: string;
+  } | null {
+    try {
+      const parsed = new URL(assetUrl);
+      if (!parsed.hostname.includes('res.cloudinary.com')) return null;
+
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      // Expected: /<cloud>/<resource_type>/<delivery_type>/[v123]/<public_id>.<format>
+      if (parts.length < 5) return null;
+
+      const resourceType = parts[1];
+      const deliveryType = parts[2];
+      let publicStartIdx = 3;
+      if (/^v\d+$/.test(parts[3])) {
+        publicStartIdx = 4;
+      }
+
+      const publicWithExt = parts.slice(publicStartIdx).join('/');
+      const dotIdx = publicWithExt.lastIndexOf('.');
+      if (dotIdx <= 0) return null;
+
+      const publicId = publicWithExt.slice(0, dotIdx);
+      const format = publicWithExt.slice(dotIdx + 1);
+      if (!publicId || !format) return null;
+
+      return { resourceType, deliveryType, publicId, format };
+    } catch {
+      return null;
+    }
+  }
+
+  private buildSignedCloudinaryDownloadUrl(assetUrl: string): string | null {
+    const parsed = this.parseCloudinaryAssetUrl(assetUrl);
+    if (!parsed) return null;
+
+    const expiresAt = Math.floor(Date.now() / 1000) + 300;
+    try {
+      return cloudinary.utils.private_download_url(parsed.publicId, parsed.format, {
+        resource_type: parsed.resourceType,
+        type: parsed.deliveryType,
+        expires_at: expiresAt,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private buildDownloadFileName(sourceUrl: string, contentType?: string): string {
+    let name = 'file';
+    try {
+      const parsed = new URL(sourceUrl);
+      const last = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || 'file');
+      name = last || 'file';
+    } catch {
+      name = 'file';
+    }
+
+    if (!/\.[a-zA-Z0-9]{2,5}$/.test(name)) {
+      const ct = (contentType || '').toLowerCase();
+      if (ct.includes('pdf')) name = `${name}.pdf`;
+      else if (ct.includes('png')) name = `${name}.png`;
+      else if (ct.includes('jpeg') || ct.includes('jpg')) name = `${name}.jpg`;
+      else if (ct.includes('webp')) name = `${name}.webp`;
+      else if (sourceUrl.includes('/raw/upload/')) name = `${name}.pdf`;
+    }
+
+    return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  }
+
+  private inferContentInfo(sourceUrl: string, remoteContentType: string): {
+    contentType: string;
+    dispositionType: 'inline' | 'attachment';
+  } {
+    const ct = (remoteContentType || '').toLowerCase();
+    const urlLower = (sourceUrl || '').toLowerCase();
+
+    const isPdf =
+      ct.includes('application/pdf') ||
+      /\.pdf($|\?)/i.test(urlLower) ||
+      urlLower.includes('/raw/upload/');
+
+    if (isPdf) {
+      return { contentType: 'application/pdf', dispositionType: 'inline' };
+    }
+
+    const isImage =
+      ct.startsWith('image/') ||
+      /\.(png|jpe?g|webp|gif)($|\?)/i.test(urlLower) ||
+      urlLower.includes('/image/upload/');
+
+    if (isImage) {
+      if (ct.startsWith('image/')) {
+        return { contentType: remoteContentType, dispositionType: 'inline' };
+      }
+      if (/\.png($|\?)/i.test(urlLower)) return { contentType: 'image/png', dispositionType: 'inline' };
+      if (/\.jpe?g($|\?)/i.test(urlLower)) return { contentType: 'image/jpeg', dispositionType: 'inline' };
+      if (/\.webp($|\?)/i.test(urlLower)) return { contentType: 'image/webp', dispositionType: 'inline' };
+      if (/\.gif($|\?)/i.test(urlLower)) return { contentType: 'image/gif', dispositionType: 'inline' };
+      return { contentType: 'image/*', dispositionType: 'inline' };
+    }
+
+    return { contentType: remoteContentType || 'application/octet-stream', dispositionType: 'attachment' };
+  }
+
+  async streamRemoteFile(url: string, res: any, redirectCount = 0, sourceUrl?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       if (redirectCount > 5) {
         return reject(new Error('Too many redirects'));
       }
+      const originalUrl = sourceUrl || url;
       const client = url.startsWith('https') ? require('https') : require('http');
       client.get(url, (remoteRes) => {
         const { statusCode, headers } = remoteRes;
         if (statusCode && statusCode >= 300 && statusCode < 400 && headers.location) {
           const nextUrl = headers.location.startsWith('http') ? headers.location : new URL(headers.location, url).toString();
           remoteRes.resume();
-          return this.streamRemoteFile(nextUrl, res, redirectCount + 1).then(resolve).catch(reject);
+          return this.streamRemoteFile(nextUrl, res, redirectCount + 1, originalUrl).then(resolve).catch(reject);
         }
+
+        if (statusCode === 401 && url.includes('res.cloudinary.com') && !url.includes('signature=')) {
+          const signedUrl = this.buildSignedCloudinaryDownloadUrl(url);
+          remoteRes.resume();
+          if (signedUrl) {
+            return this.streamRemoteFile(signedUrl, res, redirectCount + 1, originalUrl).then(resolve).catch(reject);
+          }
+        }
+
         if (statusCode !== 200) {
           return reject(new Error(`Remote status ${statusCode}`));
         }
-        const dispositionName = url.split('/').pop() || 'file';
-        res.setHeader('Content-Type', 'application/octet-stream');
-        res.setHeader('Content-Disposition', `attachment; filename="${dispositionName}"`);
+        const remoteType = String(headers['content-type'] || 'application/octet-stream');
+        const inferred = this.inferContentInfo(originalUrl, remoteType);
+        const dispositionName = this.buildDownloadFileName(originalUrl, inferred.contentType);
+
+        res.setHeader('Content-Type', inferred.contentType);
+        res.setHeader('Content-Disposition', `${inferred.dispositionType}; filename="${dispositionName}"`);
         remoteRes.pipe(res);
         remoteRes.on('end', () => resolve());
       }).on('error', reject);
