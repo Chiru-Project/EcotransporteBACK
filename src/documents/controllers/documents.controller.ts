@@ -192,7 +192,22 @@ export class DocumentsController {
       throw new HttpException('Archivo fuera de rango', HttpStatus.BAD_REQUEST);
     }
     const url = list[idx];
-    await this.documentsService.streamRemoteFile(url, res);
+    try {
+      await this.documentsService.streamRemoteFile(url, res);
+    } catch (err: any) {
+      const msg = String(err?.message || 'Error al obtener el archivo remoto');
+      const remoteStatusMatch = msg.match(/Remote status\s+(\d{3})/i);
+      const remoteStatus = remoteStatusMatch ? Number(remoteStatusMatch[1]) : null;
+
+      if (remoteStatus === 404) {
+        throw new HttpException('Archivo remoto no encontrado', HttpStatus.NOT_FOUND);
+      }
+      if (remoteStatus === 401 || remoteStatus === 403) {
+        throw new HttpException('Archivo remoto no autorizado', HttpStatus.FORBIDDEN);
+      }
+
+      throw new HttpException('Error al descargar archivo', HttpStatus.BAD_GATEWAY);
+    }
   }
 
   @Get()

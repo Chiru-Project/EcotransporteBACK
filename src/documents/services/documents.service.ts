@@ -1449,6 +1449,40 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     }
   }
 
+  private buildCanonicalCloudinaryUrl(assetUrl: string): string | null {
+    const parsed = this.parseCloudinaryAssetUrl(assetUrl);
+    if (!parsed) return null;
+
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    if (!cloudName) return null;
+
+    const publicWithExt = parsed.publicId.endsWith(`.${parsed.format}`)
+      ? parsed.publicId
+      : `${parsed.publicId}.${parsed.format}`;
+
+    return `https://res.cloudinary.com/${cloudName}/${parsed.resourceType}/${parsed.deliveryType}/${publicWithExt}`;
+  }
+
+  private buildSignedCloudinaryDeliveryUrl(assetUrl: string): string | null {
+    const parsed = this.parseCloudinaryAssetUrl(assetUrl);
+    if (!parsed) return null;
+
+    try {
+      const publicWithExt = parsed.publicId.endsWith(`.${parsed.format}`)
+        ? parsed.publicId
+        : `${parsed.publicId}.${parsed.format}`;
+
+      return cloudinary.url(publicWithExt, {
+        resource_type: parsed.resourceType,
+        type: parsed.deliveryType,
+        secure: true,
+        sign_url: true,
+      });
+    } catch {
+      return null;
+    }
+  }
+
   private buildDownloadFileName(sourceUrl: string, contentType?: string): string {
     let name = 'file';
     try {
@@ -1506,7 +1540,13 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     return { contentType: remoteContentType || 'application/octet-stream', dispositionType: 'attachment' };
   }
 
-  async streamRemoteFile(url: string, res: any, redirectCount = 0, sourceUrl?: string): Promise<void> {
+  async streamRemoteFile(
+    url: string,
+    res: any,
+    redirectCount = 0,
+    sourceUrl?: string,
+    fallbackDepth = 0,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (redirectCount > 5) {
         return reject(new Error('Too many redirects'));
@@ -1518,14 +1558,23 @@ const placaRegex = /^[A-Z0-9]{6}$/;
         if (statusCode && statusCode >= 300 && statusCode < 400 && headers.location) {
           const nextUrl = headers.location.startsWith('http') ? headers.location : new URL(headers.location, url).toString();
           remoteRes.resume();
-          return this.streamRemoteFile(nextUrl, res, redirectCount + 1, originalUrl).then(resolve).catch(reject);
+          return this.streamRemoteFile(nextUrl, res, redirectCount + 1, originalUrl, fallbackDepth).then(resolve).catch(reject);
         }
 
-        if ((statusCode === 401 || statusCode === 404) && url.includes('res.cloudinary.com') && !url.includes('signature=')) {
-          const signedUrl = this.buildSignedCloudinaryDownloadUrl(url);
+        if ((statusCode === 401 || statusCode === 404) && url.includes('cloudinary.com') && fallbackDepth < 3) {
           remoteRes.resume();
-          if (signedUrl) {
-            return this.streamRemoteFile(signedUrl, res, redirectCount + 1, originalUrl).then(resolve).catch(reject);
+
+          const fallbacks = [
+            this.buildCanonicalCloudinaryUrl(originalUrl),
+            this.buildSignedCloudinaryDeliveryUrl(originalUrl),
+            this.buildSignedCloudinaryDownloadUrl(originalUrl),
+          ].filter((candidate): candidate is string => !!candidate && candidate !== url);
+
+          if (fallbacks.length > 0) {
+            return this
+              .streamRemoteFile(fallbacks[0], res, redirectCount + 1, originalUrl, fallbackDepth + 1)
+              .then(resolve)
+              .catch(reject);
           }
         }
 
