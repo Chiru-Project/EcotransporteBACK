@@ -1483,6 +1483,17 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     }
   }
 
+  private buildCloudinaryFallbackUrls(assetUrl: string): string[] {
+    const candidates = [
+      this.buildCanonicalCloudinaryUrl(assetUrl),
+      this.buildSignedCloudinaryDeliveryUrl(assetUrl),
+      this.buildSignedCloudinaryDownloadUrl(assetUrl),
+    ].filter((v): v is string => !!v);
+
+    // Preserve order and remove duplicates.
+    return Array.from(new Set(candidates));
+  }
+
   private buildDownloadFileName(sourceUrl: string, contentType?: string): string {
     let name = 'file';
     try {
@@ -1545,7 +1556,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     res: any,
     redirectCount = 0,
     sourceUrl?: string,
-    fallbackDepth = 0,
+    fallbackStage = 0,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (redirectCount > 5) {
@@ -1558,21 +1569,18 @@ const placaRegex = /^[A-Z0-9]{6}$/;
         if (statusCode && statusCode >= 300 && statusCode < 400 && headers.location) {
           const nextUrl = headers.location.startsWith('http') ? headers.location : new URL(headers.location, url).toString();
           remoteRes.resume();
-          return this.streamRemoteFile(nextUrl, res, redirectCount + 1, originalUrl, fallbackDepth).then(resolve).catch(reject);
+          return this.streamRemoteFile(nextUrl, res, redirectCount + 1, originalUrl, fallbackStage).then(resolve).catch(reject);
         }
 
-        if ((statusCode === 401 || statusCode === 404) && url.includes('cloudinary.com') && fallbackDepth < 3) {
+        if ((statusCode === 401 || statusCode === 403 || statusCode === 404) && url.includes('cloudinary.com')) {
           remoteRes.resume();
 
-          const fallbacks = [
-            this.buildCanonicalCloudinaryUrl(originalUrl),
-            this.buildSignedCloudinaryDeliveryUrl(originalUrl),
-            this.buildSignedCloudinaryDownloadUrl(originalUrl),
-          ].filter((candidate): candidate is string => !!candidate && candidate !== url);
+          const fallbacks = this.buildCloudinaryFallbackUrls(originalUrl);
+          const nextIdx = fallbacks.findIndex((candidate, idx) => idx >= fallbackStage && candidate !== url);
 
-          if (fallbacks.length > 0) {
+          if (nextIdx !== -1) {
             return this
-              .streamRemoteFile(fallbacks[0], res, redirectCount + 1, originalUrl, fallbackDepth + 1)
+              .streamRemoteFile(fallbacks[nextIdx], res, redirectCount + 1, originalUrl, nextIdx + 1)
               .then(resolve)
               .catch(reject);
           }
