@@ -1418,8 +1418,15 @@ const placaRegex = /^[A-Z0-9]{6}$/;
       let format = '';
 
       if (dotIdx > 0) {
-        publicId = publicWithExt.slice(0, dotIdx);
-        format = publicWithExt.slice(dotIdx + 1);
+        const ext = publicWithExt.slice(dotIdx + 1);
+        if (resourceType === 'raw') {
+          // For raw assets Cloudinary often expects extension inside public_id.
+          publicId = publicWithExt;
+          format = ext;
+        } else {
+          publicId = publicWithExt.slice(0, dotIdx);
+          format = ext;
+        }
       } else {
         // Some raw Cloudinary URLs are stored without extension.
         publicId = publicWithExt;
