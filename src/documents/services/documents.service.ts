@@ -1414,10 +1414,17 @@ const placaRegex = /^[A-Z0-9]{6}$/;
 
       const publicWithExt = parts.slice(publicStartIdx).join('/');
       const dotIdx = publicWithExt.lastIndexOf('.');
-      if (dotIdx <= 0) return null;
+      let publicId = '';
+      let format = '';
 
-      const publicId = publicWithExt.slice(0, dotIdx);
-      const format = publicWithExt.slice(dotIdx + 1);
+      if (dotIdx > 0) {
+        publicId = publicWithExt.slice(0, dotIdx);
+        format = publicWithExt.slice(dotIdx + 1);
+      } else {
+        // Some raw Cloudinary URLs are stored without extension.
+        publicId = publicWithExt;
+        format = resourceType === 'raw' ? 'pdf' : '';
+      }
       if (!publicId || !format) return null;
 
       return { resourceType, deliveryType, publicId, format };
@@ -1514,7 +1521,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
           return this.streamRemoteFile(nextUrl, res, redirectCount + 1, originalUrl).then(resolve).catch(reject);
         }
 
-        if (statusCode === 401 && url.includes('res.cloudinary.com') && !url.includes('signature=')) {
+        if ((statusCode === 401 || statusCode === 404) && url.includes('res.cloudinary.com') && !url.includes('signature=')) {
           const signedUrl = this.buildSignedCloudinaryDownloadUrl(url);
           remoteRes.resume();
           if (signedUrl) {
