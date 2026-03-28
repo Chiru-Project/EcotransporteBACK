@@ -300,7 +300,11 @@ export class DashboardService {
    */
   async getGuiasPorVerificarList(filters?: DashboardFilters): Promise<any[]> {
     const queryBuilder = this.createDocQuery()
-      .andWhere('doc.tn_recibida = doc.tn_enviado');
+      .andWhere('doc.tn_recibida = doc.tn_enviado')
+      .andWhere('(doc.ticket IS NULL OR doc.ticket = :empty OR doc.ticket = :dash)', {
+        empty: '',
+        dash: '-',
+      });
 
     this.applyMesFilter(queryBuilder, filters?.mes);
     if (filters?.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
@@ -318,7 +322,11 @@ export class DashboardService {
   async getGuiasPorVerificar(filters?: DashboardFilters): Promise<number> {
     const queryBuilder = this.createDocQuery()
       .select('COUNT(*)', 'count')
-      .andWhere('doc.tn_recibida = doc.tn_enviado');
+      .andWhere('doc.tn_recibida = doc.tn_enviado')
+      .andWhere('(doc.ticket IS NULL OR doc.ticket = :empty OR doc.ticket = :dash)', {
+        empty: '',
+        dash: '-',
+      });
     
     this.applyMesFilter(queryBuilder, filters?.mes);
     if (filters?.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
