@@ -95,6 +95,62 @@ export class DocumentsService {
     documentData.mes = meses[dateUtc.getUTCMonth()];
   }
 
+  private buildIncompleteReasons(documentData: Partial<DocumentEntity>): string[] {
+    const motivoArray: string[] = [];
+    if (!documentData.cliente) motivoArray.push('Cliente no identificado');
+    if (!documentData.partida) motivoArray.push('Punto de partida no identificado');
+    if (!documentData.llegada) motivoArray.push('Punto de llegada no identificado');
+    if (!documentData.transportado) motivoArray.push('Material transportado no reconocido');
+    if (documentData.precio_unitario === null || documentData.precio_unitario === undefined) motivoArray.push('Tarifa no encontrada');
+    if (!documentData.unidad) motivoArray.push('Placa del vehículo no identificada');
+    return motivoArray;
+  }
+
+  private async tryRepairMissingTariff(doc: DocumentEntity): Promise<DocumentEntity> {
+    const tarifaSinAsignar = doc.precio_unitario === null || doc.precio_unitario === undefined;
+    if (!tarifaSinAsignar || doc.anulado) return doc;
+    if (!doc.partida || !doc.llegada || !doc.transportado) return doc;
+
+    const financialData: Partial<DocumentEntity> = {
+      cliente: doc.cliente,
+      partida: doc.partida,
+      llegada: doc.llegada,
+      transportado: doc.transportado,
+      empresa: doc.empresa,
+      transportista: doc.transportista,
+      tn_recibida: doc.tn_recibida,
+    };
+
+    const found = await this.calculateFinancialFields(financialData);
+    const tarifaRecuperada = found && financialData.precio_unitario !== null && financialData.precio_unitario !== undefined;
+    if (!tarifaRecuperada) return doc;
+
+    const mergedDoc: Partial<DocumentEntity> = {
+      ...doc,
+      ...financialData,
+    };
+    const nuevoMotivoArray = this.buildIncompleteReasons(mergedDoc);
+    const nuevoMotivo = nuevoMotivoArray.length > 0 ? nuevoMotivoArray.join(' | ') : null;
+
+    await this.documentsRepository.update(doc.id, {
+      cliente: financialData.cliente,
+      precio_unitario: financialData.precio_unitario,
+      divisa: financialData.divisa,
+      precio_final: financialData.precio_final,
+      pcosto: financialData.pcosto,
+      divisa_cost: financialData.divisa_cost,
+      costo_final: financialData.costo_final,
+      margen_operativo: financialData.margen_operativo,
+      motivo: nuevoMotivo,
+    });
+
+    return {
+      ...doc,
+      ...financialData,
+      motivo: nuevoMotivo,
+    } as DocumentEntity;
+  }
+
   async uploadAndProcessDocument(
     pdfBuffer: Buffer,
     fileName: string,
@@ -1067,18 +1123,20 @@ const placaRegex = /^[A-Z0-9]{6}$/;
       });
 
       // Asignar precio unitario y divisa desde tarifario
-      documentData.precio_unitario = Number(tarifa.precioVentaConIgv) || null;
+      const precioVenta = Number(tarifa.precioVentaConIgv);
+      documentData.precio_unitario = Number.isNaN(precioVenta) ? null : precioVenta;
       documentData.divisa = tarifa.moneda || null;
 
       // Asignar costo y divisa de costo desde tarifario
-      documentData.pcosto = Number(tarifa.precioCostoConIgv) || null;
+      const precioCosto = Number(tarifa.precioCostoConIgv);
+      documentData.pcosto = Number.isNaN(precioCosto) ? null : precioCosto;
       documentData.divisa_cost = tarifa.divisa || null;
 
       // Verificar si es un cliente con tarifa fija (no se multiplica por tn_recibida)
       const esTarifaFija = ['NUKLEO PERU S.A.C.', 'PAY METAL TRADING S.A.C.'].includes(documentData.cliente?.toUpperCase() || tarifa.cliente?.toUpperCase());
 
       // Calcular precio final
-      if (documentData.precio_unitario && tn_recibida) {
+      if (documentData.precio_unitario !== null && documentData.precio_unitario !== undefined && tn_recibida !== null && tn_recibida !== undefined) {
         if (esTarifaFija) {
           documentData.precio_final = Number(documentData.precio_unitario.toFixed(2));
         } else {
@@ -1097,7 +1155,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
         documentData.margen_operativo = 0;
         console.log('Transportista es ECOTRANSPORTE, pcosto/costo_final/margen_operativo = 0');
       } else {
-        if (documentData.pcosto && tn_recibida) {
+        if (documentData.pcosto !== null && documentData.pcosto !== undefined && tn_recibida !== null && tn_recibida !== undefined) {
           if (esTarifaFija) {
             documentData.costo_final = Number(documentData.pcosto.toFixed(2));
           } else {
@@ -1127,24 +1185,29 @@ const placaRegex = /^[A-Z0-9]{6}$/;
   }
 
   async getDocumentById(id: number): Promise<DocumentEntity | null> {
-    return await this.documentsRepository.findOne({
+    const doc = await this.documentsRepository.findOne({
       where: { id },
       relations: ['uploader', 'uploader.userInformation', 'updater'],
     });
+
+    if (!doc) return null;
+    return await this.tryRepairMissingTariff(doc);
   }
 
   async getAllDocuments(): Promise<DocumentEntity[]> {
-    return await this.documentsRepository
+    const docs = await this.documentsRepository
       .createQueryBuilder('doc')
       .leftJoinAndSelect('doc.uploader', 'uploader')
       .leftJoinAndSelect('uploader.userInformation', 'userInformation')
       .orderBy(`CAST(SUBSTRING(doc.grt FROM '([0-9]+)$') AS INTEGER)`, 'ASC')
       .addOrderBy('doc.grt', 'ASC')
       .getMany();
+
+    return await Promise.all(docs.map((doc) => this.tryRepairMissingTariff(doc)));
   }
 
   async getDocumentsByUser(userId: number): Promise<DocumentEntity[]> {
-    return await this.documentsRepository
+    const docs = await this.documentsRepository
       .createQueryBuilder('doc')
       .leftJoinAndSelect('doc.uploader', 'uploader')
       .leftJoinAndSelect('uploader.userInformation', 'userInformation')
@@ -1152,6 +1215,8 @@ const placaRegex = /^[A-Z0-9]{6}$/;
       .orderBy(`CAST(SUBSTRING(doc.grt FROM '([0-9]+)$') AS INTEGER)`, 'ASC')
       .addOrderBy('doc.grt', 'ASC')
       .getMany();
+
+    return await Promise.all(docs.map((doc) => this.tryRepairMissingTariff(doc)));
   }
 
   async updateDocument(
@@ -1178,7 +1243,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
 
         // Recalcular precio_final
         // Si es tarifa fija (Nukleo/Pay Metal) → precio_final = precio_unitario (sin × TN)
-        if (precioUnitario) {
+        if (precioUnitario !== null && precioUnitario !== undefined) {
           updateData.precio_final = esTarifaFija
             ? Number(Number(precioUnitario).toFixed(2))
             : Number((Number(precioUnitario) * tn_recibida).toFixed(2));
@@ -1193,7 +1258,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
           updateData.costo_final = 0;
           updateData.margen_operativo = 0;
         } else {
-          if (pcosto) {
+          if (pcosto !== null && pcosto !== undefined) {
             updateData.costo_final = esTarifaFija
               ? Number(Number(pcosto).toFixed(2))
               : Number((Number(pcosto) * tn_recibida).toFixed(2));
@@ -1216,7 +1281,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
       if (!updatedDoc.partida) motivoArray.push('Punto de partida no identificado');
       if (!updatedDoc.llegada) motivoArray.push('Punto de llegada no identificado');
       if (!updatedDoc.transportado) motivoArray.push('Material transportado no reconocido');
-      if (!updatedDoc.precio_unitario) motivoArray.push('Tarifa no encontrada');
+      if (updatedDoc.precio_unitario === null || updatedDoc.precio_unitario === undefined) motivoArray.push('Tarifa no encontrada');
       if (!updatedDoc.unidad) motivoArray.push('Placa del vehículo no identificada');
 
       const nuevoMotivo = motivoArray.length > 0 ? motivoArray.join(' | ') : null;
@@ -1269,7 +1334,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     if (!documentData.partida) motivoArray.push('Punto de partida no ingresado');
     if (!documentData.llegada) motivoArray.push('Punto de llegada no ingresado');
     if (!documentData.transportado) motivoArray.push('Material no ingresado');
-    if (!documentData.precio_unitario) motivoArray.push('Tarifa no encontrada');
+    if (documentData.precio_unitario === null || documentData.precio_unitario === undefined) motivoArray.push('Tarifa no encontrada');
     documentData.motivo = motivoArray.length > 0 ? motivoArray.join(' | ') : null;
 
     const doc = this.documentsRepository.create(documentData);
