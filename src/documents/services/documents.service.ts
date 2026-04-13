@@ -95,12 +95,19 @@ export class DocumentsService {
     documentData.mes = meses[dateUtc.getUTCMonth()];
   }
 
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    return 'Error desconocido';
+  }
+
   private buildIncompleteReasons(documentData: Partial<DocumentEntity>): string[] {
     const motivoArray: string[] = [];
     if (!documentData.cliente) motivoArray.push('Cliente no identificado');
     if (!documentData.partida) motivoArray.push('Punto de partida no identificado');
     if (!documentData.llegada) motivoArray.push('Punto de llegada no identificado');
     if (!documentData.transportado) motivoArray.push('Material transportado no reconocido');
+    if (!documentData.tn_enviado) motivoArray.push('Peso y unidad de medida no identificada en la guia.');
     if (documentData.precio_unitario === null || documentData.precio_unitario === undefined) motivoArray.push('Tarifa no encontrada');
     if (!documentData.unidad) motivoArray.push('Placa del vehículo no identificada');
     return motivoArray;
@@ -164,7 +171,7 @@ export class DocumentsService {
         const uniqueVals = await this.clientTariffService.getUniqueValues();
         materialesCatalogo = uniqueVals.materiales || [];
       } catch (e) {
-        console.warn('No se pudo cargar catálogo de materiales para OpenAI:', e?.message);
+        console.warn('No se pudo cargar catálogo de materiales para OpenAI:', this.getErrorMessage(e));
       }
 
       // Enviar Buffer ----- directamente a OpenAI (la conversión PDF→Imagen se hace internamente)
@@ -240,7 +247,7 @@ export class DocumentsService {
       if (!documentData.partida) motivoArray.push('Punto de partida no identificado');
       if (!documentData.llegada) motivoArray.push('Punto de llegada no identificado');
       if (!documentData.transportado) motivoArray.push('Material transportado no reconocido');
-      if (!documentData.tn_enviado) motivoArray.push('Tonelaje enviado no encontrado');
+      if (!documentData.tn_enviado) motivoArray.push('Peso y unidad de medida no identificada en la guia.');
 
       // Normalizar nombre de transportista contra existentes en BD
       await this.normalizeTransportistaNombre(documentData);
@@ -617,7 +624,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
             }
           }
         } catch (e) {
-          console.log('  Error al obtener tarifas por contexto:', e?.message);
+          console.log('  Error al obtener tarifas por contexto:', this.getErrorMessage(e));
         }
       }
 
@@ -664,7 +671,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
             console.log(`  ⚠️ Múltiples materiales en ruta (${contextMaterials.join(', ')}), no hay texto PDF disponible → null`);
           }
         } catch (e) {
-          console.log('  Error al obtener tarifas para fallback único candidato:', e?.message);
+          console.log('  Error al obtener tarifas para fallback único candidato:', this.getErrorMessage(e));
         }
       }
     }
@@ -1281,6 +1288,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
       if (!updatedDoc.partida) motivoArray.push('Punto de partida no identificado');
       if (!updatedDoc.llegada) motivoArray.push('Punto de llegada no identificado');
       if (!updatedDoc.transportado) motivoArray.push('Material transportado no reconocido');
+      if (!updatedDoc.tn_enviado) motivoArray.push('Peso y unidad de medida no identificada en la guia.');
       if (updatedDoc.precio_unitario === null || updatedDoc.precio_unitario === undefined) motivoArray.push('Tarifa no encontrada');
       if (!updatedDoc.unidad) motivoArray.push('Placa del vehículo no identificada');
 
@@ -1334,6 +1342,7 @@ const placaRegex = /^[A-Z0-9]{6}$/;
     if (!documentData.partida) motivoArray.push('Punto de partida no ingresado');
     if (!documentData.llegada) motivoArray.push('Punto de llegada no ingresado');
     if (!documentData.transportado) motivoArray.push('Material no ingresado');
+    if (!documentData.tn_enviado) motivoArray.push('Peso y unidad de medida no identificada en la guia.');
     if (documentData.precio_unitario === null || documentData.precio_unitario === undefined) motivoArray.push('Tarifa no encontrada');
     documentData.motivo = motivoArray.length > 0 ? motivoArray.join(' | ') : null;
 

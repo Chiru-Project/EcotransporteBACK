@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+﻿import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Not } from 'typeorm';
 import { DocumentEntity } from '../../documents/entities/document.entity';
@@ -53,7 +53,7 @@ export class DashboardService {
   ) {}
 
   /**
-   * Construye la condici�n WHERE basada en los filtros
+   * Construye la condiciï¿½n WHERE basada en los filtros
    */
   private buildWhereCondition(filters: DashboardFilters): any {
     const where: any = { anulado: false };
@@ -112,6 +112,22 @@ export class DashboardService {
 
   private getMesSqlExpression(alias = 'doc') {
     return `COALESCE(NULLIF(LOWER(TRIM(${alias}.mes)), ''), CASE WHEN ${alias}.fecha IS NOT NULL THEN CASE EXTRACT(MONTH FROM ${alias}.fecha)::int WHEN 1 THEN 'enero' WHEN 2 THEN 'febrero' WHEN 3 THEN 'marzo' WHEN 4 THEN 'abril' WHEN 5 THEN 'mayo' WHEN 6 THEN 'junio' WHEN 7 THEN 'julio' WHEN 8 THEN 'agosto' WHEN 9 THEN 'septiembre' WHEN 10 THEN 'octubre' WHEN 11 THEN 'noviembre' WHEN 12 THEN 'diciembre' END END)`;
+  }
+
+  private getTransportadoSqlExpression(alias = 'doc') {
+    return `UPPER(TRIM(REGEXP_REPLACE(${alias}.transportado, '\\s+', ' ', 'g')))`;
+  }
+
+  private getTransportistaSqlExpression(alias = 'doc') {
+    return `UPPER(TRIM(REGEXP_REPLACE(${alias}.transportista, '\\s+', ' ', 'g')))`;
+  }
+
+  private applyTransportadoFilter(queryBuilder: any, transportado?: string, alias = 'doc', paramName = 'transportado') {
+    if (!transportado) return queryBuilder;
+    const transportadoExpr = this.getTransportadoSqlExpression(alias);
+    const normalized = String(transportado).trim().replace(/\s+/g, ' ').toUpperCase();
+    queryBuilder.andWhere(`${transportadoExpr} = :${paramName}`, { [paramName]: normalized });
+    return queryBuilder;
   }
 
 
@@ -190,7 +206,7 @@ export class DashboardService {
   }
 
   /**
-   * Obtiene valores �nicos para los segmentadores
+   * Obtiene valores ï¿½nicos para los segmentadores
    */
   async getSegmentadores(): Promise<any> {
     await this.ensureSemanasBackfilled();
@@ -227,9 +243,9 @@ export class DashboardService {
       .getRawMany();
 
     const transportados = await this.createDocQuery()
-      .select('DISTINCT doc.transportado', 'transportado')
+      .select(`DISTINCT ${this.getTransportadoSqlExpression('doc')}`, 'transportado')
       .andWhere('doc.transportado IS NOT NULL')
-      .orderBy('doc.transportado')
+      .orderBy(this.getTransportadoSqlExpression('doc'))
       .getRawMany();
 
     return {
@@ -244,8 +260,8 @@ export class DashboardService {
 
   /**
    * Segmentadores filtrados en cascada:
-   * Para cada dimensi�n devuelve solo las opciones disponibles
-   * dada la combinaci�n de los DEM�S filtros seleccionados.
+   * Para cada dimensiï¿½n devuelve solo las opciones disponibles
+   * dada la combinaciï¿½n de los DEMï¿½S filtros seleccionados.
    */
   async getSegmentadoresFiltrados(filters: DashboardFilters): Promise<any> {
     await this.ensureSemanasBackfilled();
@@ -261,7 +277,7 @@ export class DashboardService {
       if (cliente && omit !== 'cliente') qb.andWhere('doc.cliente = :cliente', { cliente });
       if (transportista && omit !== 'transportista') qb.andWhere('doc.transportista = :transportista', { transportista });
       if (unidad && omit !== 'unidad') qb.andWhere('doc.unidad = :unidad', { unidad });
-      if (transportado && omit !== 'transportado') qb.andWhere('doc.transportado = :transportado', { transportado });
+      if (transportado && omit !== 'transportado') this.applyTransportadoFilter(qb, transportado);
       if (divisa && omit !== 'divisa') qb.andWhere('doc.divisa = :divisa', { divisa });
       return qb;
     };
@@ -280,7 +296,7 @@ export class DashboardService {
         applyFilters(this.createDocQuery().select('DISTINCT doc.cliente', 'cliente').andWhere('doc.cliente IS NOT NULL').orderBy('doc.cliente'), 'cliente').getRawMany(),
         applyFilters(this.createDocQuery().select('DISTINCT doc.transportista', 'transportista').andWhere('doc.transportista IS NOT NULL').orderBy('doc.transportista'), 'transportista').getRawMany(),
         applyFilters(this.createDocQuery().select('DISTINCT doc.unidad', 'unidad').andWhere('doc.unidad IS NOT NULL').orderBy('doc.unidad'), 'unidad').getRawMany(),
-        applyFilters(this.createDocQuery().select('DISTINCT doc.transportado', 'transportado').andWhere('doc.transportado IS NOT NULL').orderBy('doc.transportado'), 'transportado').getRawMany(),
+        applyFilters(this.createDocQuery().select(`DISTINCT ${this.getTransportadoSqlExpression('doc')}`, 'transportado').andWhere('doc.transportado IS NOT NULL').orderBy(this.getTransportadoSqlExpression('doc')), 'transportado').getRawMany(),
         applyFilters(this.createDocQuery().select('DISTINCT doc.divisa', 'divisa').andWhere('doc.divisa IS NOT NULL').orderBy('doc.divisa'), 'divisa').getRawMany(),
       ]);
 
@@ -296,7 +312,7 @@ export class DashboardService {
   }
 
   /**
-   * Lista de gu�as por verificar (tn_recibida = tn_enviado)
+   * Lista de guï¿½as por verificar (tn_recibida = tn_enviado)
    */
   async getGuiasPorVerificarList(filters?: DashboardFilters): Promise<any[]> {
     const queryBuilder = this.createDocQuery()
@@ -311,13 +327,13 @@ export class DashboardService {
     if (filters?.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters?.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters?.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters?.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters?.transportado);
 
     return await queryBuilder.orderBy(`CAST(SUBSTRING(doc.grt FROM '([0-9]+)$') AS INTEGER)`, 'ASC').addOrderBy('doc.grt', 'ASC').limit(50).getMany();
   }
 
   /**
-   * Gu�as por verificar (tn_recibida = tn_enviado)
+   * Guï¿½as por verificar (tn_recibida = tn_enviado)
    */
   async getGuiasPorVerificar(filters?: DashboardFilters): Promise<number> {
     const queryBuilder = this.createDocQuery()
@@ -333,7 +349,7 @@ export class DashboardService {
     if (filters?.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters?.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters?.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters?.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters?.transportado);
     
     const sql = queryBuilder.getSql();
     console.log('SQL Guias por verificar:', sql);
@@ -344,7 +360,7 @@ export class DashboardService {
   }
 
   /**
-   * Tickets no recepcionados (solo ticket vac�o/null, sin importar peso)
+   * Tickets no recepcionados (solo ticket vacï¿½o/null, sin importar peso)
    */
   async getTicketsNoRecepcionados(filters?: DashboardFilters): Promise<number> {
     const queryBuilder = this.createDocQuery()
@@ -357,7 +373,7 @@ export class DashboardService {
     if (filters?.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters?.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters?.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters?.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters?.transportado);
     
     const sql = queryBuilder.getSql();
     console.log('SQL Tickets no recepcionados:', sql);
@@ -368,7 +384,7 @@ export class DashboardService {
   }
 
   /**
-   * Lista de tickets no recepcionados (solo ticket vac�o/null)
+   * Lista de tickets no recepcionados (solo ticket vacï¿½o/null)
    */
   async getTicketsNoRecepcionadosList(filters?: DashboardFilters): Promise<any[]> {
     const queryBuilder = this.createDocQuery()
@@ -380,7 +396,7 @@ export class DashboardService {
     if (filters?.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters?.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters?.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters?.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters?.transportado);
     
     return await queryBuilder
       .orderBy('doc.fecha', 'DESC')
@@ -389,7 +405,7 @@ export class DashboardService {
   }
 
   /**
-   * Control de peso: TN Enviado total, TN Recibido total, Variaci�n
+   * Control de peso: TN Enviado total, TN Recibido total, Variaciï¿½n
    */
   async getControlPeso(filters: DashboardFilters): Promise<any> {
     const queryBuilder = this.createDocQuery()
@@ -402,7 +418,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     const result = await queryBuilder.getRawOne();
     
@@ -433,7 +449,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     const rows = await queryBuilder
       .groupBy('doc.semana')
@@ -463,7 +479,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     const rows = await queryBuilder
       .groupBy('doc.semana')
@@ -479,8 +495,9 @@ export class DashboardService {
    * TN por tipo de concentrado (enviado)
    */
   async getTnPorConcentradoEnviado(filters: DashboardFilters): Promise<any[]> {
+    const transportadoExpr = this.getTransportadoSqlExpression('doc');
     const queryBuilder = this.createDocQuery()
-      .select('doc.transportado', 'tipo_concentrado')
+      .select(transportadoExpr, 'tipo_concentrado')
       .addSelect('SUM(doc.tn_enviado)', 'total')
       .andWhere('doc.transportado IS NOT NULL');
 
@@ -489,10 +506,10 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     return await queryBuilder
-      .groupBy('doc.transportado')
+      .groupBy(transportadoExpr)
       .orderBy('total', 'DESC')
       .getRawMany();
   }
@@ -501,8 +518,9 @@ export class DashboardService {
    * TN por tipo de concentrado (recibido)
    */
   async getTnPorConcentradoRecibido(filters: DashboardFilters): Promise<any[]> {
+    const transportadoExpr = this.getTransportadoSqlExpression('doc');
     const queryBuilder = this.createDocQuery()
-      .select('doc.transportado', 'tipo_concentrado')
+      .select(transportadoExpr, 'tipo_concentrado')
       .addSelect('SUM(doc.tn_recibida)', 'total')
       .andWhere('doc.transportado IS NOT NULL')
       .andWhere('doc.tn_recibida IS NOT NULL');
@@ -512,10 +530,10 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     return await queryBuilder
-      .groupBy('doc.transportado')
+      .groupBy(transportadoExpr)
       .orderBy('total', 'DESC')
       .getRawMany();
   }
@@ -534,7 +552,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     return await queryBuilder
       .groupBy('doc.unidad')
@@ -555,7 +573,7 @@ export class DashboardService {
 
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
 
     return await queryBuilder
@@ -579,7 +597,7 @@ export class DashboardService {
     if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     return await queryBuilder
       .groupBy('doc.cliente')
@@ -601,7 +619,7 @@ export class DashboardService {
     if (filters?.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters?.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters?.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters?.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters?.transportado);
 
     const result = await queryBuilder.getRawOne();
     return Number(result.total) || 0;
@@ -630,8 +648,8 @@ export class DashboardService {
   }
 
   /**
-   * Viajes: combinaci�n �nica de fecha + cliente
-   * Un viaje = todos los traslados del mismo d�a para el mismo cliente
+   * Viajes: combinaciï¿½n ï¿½nica de fecha + cliente
+   * Un viaje = todos los traslados del mismo dï¿½a para el mismo cliente
    * Excluye documentos con transportista = 'DADO DE BAJA'
    */
   async getViajes(filters: DashboardFilters): Promise<number> {
@@ -657,25 +675,34 @@ export class DashboardService {
   async getDetalleTransportista(filters: DashboardFilters): Promise<any[]> {
     await this.ensureSemanasBackfilled();
 
+    const transportistaExpr = this.getTransportistaSqlExpression('doc');
+
     const queryBuilder = this.createDocQuery()
-      .select('doc.transportista', 'transportista')
-      .addSelect('COALESCE(doc.divisa_cost, \'PEN\')', 'divisa_cost')
+      .select(transportistaExpr, 'transportista')
       .addSelect('COUNT(*)', 'cantidad_traslados')
+      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'USD' THEN 1 ELSE 0 END)", 'cantidad_traslados_usd')
+      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'PEN' THEN 1 ELSE 0 END)", 'cantidad_traslados_pen')
       .addSelect('SUM(doc.tn_enviado)', 'tn_enviado')
       .addSelect('SUM(doc.tn_recibida)', 'tn_recibido')
       .addSelect('SUM(doc.tn_recibida) - SUM(doc.tn_enviado)', 'variacion')
       .addSelect('SUM(COALESCE(doc.precio_final, 0))', 'precio_total')
+      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'USD' THEN COALESCE(doc.precio_final, 0) ELSE 0 END)", 'precio_total_usd')
+      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'PEN' THEN COALESCE(doc.precio_final, 0) ELSE 0 END)", 'precio_total_pen')
+      .addSelect("CASE WHEN COUNT(DISTINCT COALESCE(doc.divisa_cost, 'PEN')) = 1 THEN MAX(COALESCE(doc.divisa_cost, 'PEN')) ELSE 'MIXTA' END", 'divisa_cost')
       .andWhere('doc.transportista IS NOT NULL');
 
     this.applyMesFilter(queryBuilder, filters.mes);
     if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
-    if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
+    if (filters.transportista) {
+      queryBuilder.andWhere(`${transportistaExpr} = :transportista`, {
+        transportista: String(filters.transportista).trim().replace(/\s+/g, ' ').toUpperCase(),
+      });
+    }
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
 
     return await queryBuilder
-      .groupBy('doc.transportista')
-      .addGroupBy('doc.divisa_cost')
+      .groupBy(transportistaExpr)
       .orderBy('tn_enviado', 'DESC')
       .getRawMany();
   }
@@ -686,8 +713,10 @@ export class DashboardService {
   async getDetalleTransportistaViajes(filters: DashboardFilters): Promise<any[]> {
     await this.ensureSemanasBackfilled();
 
+    const transportistaExpr = this.getTransportistaSqlExpression('doc');
+
     const queryBuilder = this.createDocQuery()
-      .select("COALESCE(doc.transportista, '')", 'transportista')
+      .select(transportistaExpr, 'transportista')
       .addSelect('COALESCE(doc.divisa_cost, \'PEN\')', 'divisa_cost')
       .addSelect('doc.fecha', 'fecha')
       .addSelect('doc.unidad', 'unidad')
@@ -705,11 +734,15 @@ export class DashboardService {
     this.applyMesFilter(queryBuilder, filters.mes);
     if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
-    if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
+    if (filters.transportista) {
+      queryBuilder.andWhere(`${transportistaExpr} = :transportista`, {
+        transportista: String(filters.transportista).trim().replace(/\s+/g, ' ').toUpperCase(),
+      });
+    }
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
 
     return await queryBuilder
-      .orderBy('doc.transportista', 'ASC')
+      .orderBy(transportistaExpr, 'ASC')
       .addOrderBy('doc.fecha', 'DESC')
       .getRawMany();
   }
@@ -738,7 +771,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     const result = await queryBuilder.getRawOne();
     return Number(result.total) || 0;
@@ -757,7 +790,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     const result = await queryBuilder.getRawOne();
     return Number(result.total) || 0;
@@ -779,7 +812,7 @@ export class DashboardService {
     if (filters.cliente) queryBuilder.andWhere('doc.cliente = :cliente', { cliente: filters.cliente });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
 
     return await queryBuilder
       .groupBy('doc.semana')
@@ -916,7 +949,7 @@ export class DashboardService {
     if (filters.semana) queryBuilder.andWhere('doc.semana = :semana', { semana: filters.semana });
     if (filters.unidad) queryBuilder.andWhere('doc.unidad = :unidad', { unidad: filters.unidad });
     if (filters.transportista) queryBuilder.andWhere('doc.transportista = :transportista', { transportista: filters.transportista });
-    if (filters.transportado) queryBuilder.andWhere('doc.transportado = :transportado', { transportado: filters.transportado });
+    this.applyTransportadoFilter(queryBuilder, filters.transportado);
     if (filters.divisa) queryBuilder.andWhere('doc.divisa = :divisa', { divisa: filters.divisa });
 
     return await queryBuilder
@@ -987,7 +1020,7 @@ export class DashboardService {
   // =====================================================
 
   /**
-   * Obtener d�as con viajes seg�n cliente y/o placa
+   * Obtener dï¿½as con viajes segï¿½n cliente y/o placa
    * Excluye transportista = 'DADO DE BAJA'
    */
   async getDiasConViajes(filters: DashboardFilters): Promise<any[]> {
@@ -1031,8 +1064,8 @@ export class DashboardService {
   }
 
   /**
-   * Viajes por placa para un cliente (gr�fico de barras)
-   * Viaje = combinaci�n �nica fecha + cliente
+   * Viajes por placa para un cliente (grï¿½fico de barras)
+   * Viaje = combinaciï¿½n ï¿½nica fecha + cliente
    * Excluye transportista = 'DADO DE BAJA'
    */
   async getViajesPorPlaca(filters: DashboardFilters): Promise<any[]> {
@@ -1057,7 +1090,7 @@ export class DashboardService {
    * Resumen de viajes por cliente
    */
   async getResumenViajesCliente(filters: DashboardFilters): Promise<any> {
-    // Total de viajes (combinaciones �nicas fecha + cliente)
+    // Total de viajes (combinaciones ï¿½nicas fecha + cliente)
     const viajesQuery = this.createDocQuery()
       .select('COUNT(DISTINCT CONCAT(doc.fecha, doc.cliente))', 'viajes')
       .andWhere('doc.fecha IS NOT NULL')
@@ -1093,7 +1126,7 @@ export class DashboardService {
   // =====================================================
 
   /**
-   * Definici�n de las 7 filas fijas (agrupaciones predefinidas de tarifas).
+   * Definiciï¿½n de las 7 filas fijas (agrupaciones predefinidas de tarifas).
    * Cada una matchea documentos por cliente + condiciones de partida/llegada/material.
    */
   private getFixedRows(): Array<{
@@ -1125,7 +1158,7 @@ export class DashboardService {
         divisa: 'USD',
       },
       {
-        label: 'Polimet�licos',
+        label: 'Polimetï¿½licos',
         match: (doc) => (doc.cliente || '').toUpperCase().includes('POLIMETALICOS'),
         matchTariff: (t) => t.cliente.toUpperCase().includes('POLIMETALICOS'),
         divisa: 'USD',
@@ -1161,7 +1194,7 @@ export class DashboardService {
         divisa: 'USD',
       },
       {
-        label: 'ECO-GOLD-Mineral Polimet�lico',
+        label: 'ECO-GOLD-Mineral Polimetï¿½lico',
         match: (doc) => {
           const cl = (doc.cliente || '').toUpperCase();
           const mat = (doc.transportado || '').toUpperCase();
@@ -1174,7 +1207,7 @@ export class DashboardService {
         divisa: 'USD',
       },
       {
-        label: 'MONARCA (Nepe�a-Impala)',
+        label: 'MONARCA (Nepeï¿½a-Impala)',
         match: (doc) => {
           const cl = (doc.cliente || '').toUpperCase();
           const part = (doc.partida || '').toUpperCase();
@@ -1220,7 +1253,7 @@ export class DashboardService {
     }
     const semanasDisponibles = [...semanasSet].sort((a, b) => Number(a) - Number(b));
 
-    // Filtrar por semana si se proporcion�
+    // Filtrar por semana si se proporcionï¿½
     const docs = semana
       ? allDocsDelMes.filter(d => String(d.semana) === String(semana))
       : allDocsDelMes;
@@ -1249,7 +1282,7 @@ export class DashboardService {
       if (placa && placaToEmpresa.has(placa)) {
         return placaToEmpresa.get(placa);
       }
-      // Si no la encontramos por placa y el doc ya ten�a empresa, usar la empresa del doc (si existe en BD)
+      // Si no la encontramos por placa y el doc ya tenï¿½a empresa, usar la empresa del doc (si existe en BD)
       if (doc.empresa && allEmpresas.some(e => e.nombre.toUpperCase().trim() === doc.empresa.toUpperCase().trim())) {
         return doc.empresa;
       }
@@ -1298,7 +1331,7 @@ export class DashboardService {
       }>;
     }> = [];
 
-    // Ordenar clientes alfab�ticamente
+    // Ordenar clientes alfabï¿½ticamente
     const clientesOrdenados = [...clienteMap.keys()].sort();
 
     for (const cliente of clientesOrdenados) {
@@ -1401,11 +1434,11 @@ export class DashboardService {
   }
 
   // =====================================================
-  // REPORTE DE GU�AS EMITIDAS POR EMPRESA DE TRANSPORTE
+  // REPORTE DE GUï¿½AS EMITIDAS POR EMPRESA DE TRANSPORTE
   // =====================================================
 
   /**
-   * Opciones para el reporte de gu�as: empresas disponibles y meses
+   * Opciones para el reporte de guï¿½as: empresas disponibles y meses
    */
   async getReporteGuiasOpciones(): Promise<any> {
     const empresas = await this.empresaRepository.find({
@@ -1426,7 +1459,7 @@ export class DashboardService {
   }
 
   /**
-   * Reporte detallado de gu�as emitidas para una empresa de transporte en un mes.
+   * Reporte detallado de guï¿½as emitidas para una empresa de transporte en un mes.
    * Agrupa por placa (unidad) y sub-agrupa por semana.
    */
   async getReporteGuias(empresaNombre: string, mes: string, semana?: string): Promise<any> {
@@ -1471,7 +1504,7 @@ export class DashboardService {
     }
     const semanasDisponibles = [...semanasSet].sort((a, b) => Number(a) - Number(b));
 
-    // Filtrar por semana si se proporcion�
+    // Filtrar por semana si se proporcionï¿½
     const docs = semana
       ? allDocsDelMes.filter(d => String(d.semana) === String(semana))
       : allDocsDelMes;
@@ -1584,7 +1617,7 @@ export class DashboardService {
   }
 
   /**
-   * Reporte de gu�as emitidas para TODAS las empresas de transporte en un mes.
+   * Reporte de guï¿½as emitidas para TODAS las empresas de transporte en un mes.
    */
   async getReporteGuiasTodas(mes: string, semana?: string): Promise<any> {
     const empresas = await this.empresaRepository.find({
@@ -1633,4 +1666,5 @@ export class DashboardService {
     };
   }
 }
+
 
