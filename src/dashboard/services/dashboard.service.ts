@@ -676,19 +676,16 @@ export class DashboardService {
     await this.ensureSemanasBackfilled();
 
     const transportistaExpr = this.getTransportistaSqlExpression('doc');
+    const divisaExpr = "COALESCE(doc.divisa_cost, 'PEN')";
 
     const queryBuilder = this.createDocQuery()
       .select(transportistaExpr, 'transportista')
+      .addSelect(divisaExpr, 'divisa_cost')
       .addSelect('COUNT(*)', 'cantidad_traslados')
-      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'USD' THEN 1 ELSE 0 END)", 'cantidad_traslados_usd')
-      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'PEN' THEN 1 ELSE 0 END)", 'cantidad_traslados_pen')
       .addSelect('SUM(doc.tn_enviado)', 'tn_enviado')
       .addSelect('SUM(doc.tn_recibida)', 'tn_recibido')
       .addSelect('SUM(doc.tn_recibida) - SUM(doc.tn_enviado)', 'variacion')
       .addSelect('SUM(COALESCE(doc.precio_final, 0))', 'precio_total')
-      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'USD' THEN COALESCE(doc.precio_final, 0) ELSE 0 END)", 'precio_total_usd')
-      .addSelect("SUM(CASE WHEN COALESCE(doc.divisa_cost, 'PEN') = 'PEN' THEN COALESCE(doc.precio_final, 0) ELSE 0 END)", 'precio_total_pen')
-      .addSelect("CASE WHEN COUNT(DISTINCT COALESCE(doc.divisa_cost, 'PEN')) = 1 THEN MAX(COALESCE(doc.divisa_cost, 'PEN')) ELSE 'MIXTA' END", 'divisa_cost')
       .andWhere('doc.transportista IS NOT NULL');
 
     this.applyMesFilter(queryBuilder, filters.mes);
@@ -703,6 +700,7 @@ export class DashboardService {
 
     return await queryBuilder
       .groupBy(transportistaExpr)
+      .addGroupBy(divisaExpr)
       .orderBy('tn_enviado', 'DESC')
       .getRawMany();
   }
